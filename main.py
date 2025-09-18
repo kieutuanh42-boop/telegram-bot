@@ -1,11 +1,9 @@
-# main.py
-import os, io, logging, random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+import os
+import logging
+import random
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import chess
-import chess.svg
-from PIL import Image
-import cairosvg
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -13,62 +11,51 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 GAMES = {}  # chat_id -> {"board": chess.Board(), "mode": "pvp"/"ai", "selected": None}
 
-# === Helpers ===
-def render_board(board: chess.Board) -> InputFile:
-    """Trả về ảnh bàn cờ dưới dạng InputFile để gửi Telegram."""
-    svg_data = chess.svg.board(board=board)
-    png_data = cairosvg.svg2png(bytestring=svg_data)
-    image = Image.open(io.BytesIO(png_data))
-    out = io.BytesIO()
-    image.save(out, format="PNG")
-    out.seek(0)
-    return InputFile(out, filename="board.png")
+UNICODE_PIECES = {
+    "P": "♙", "p": "♟",
+    "R": "♖", "r": "♜",
+    "N": "♘", "n": "♞",
+    "B": "♗", "b": "♝",
+    "Q": "♕", "q": "♛",
+    "K": "♔", "k": "♚",
+}
+
+
+def make_board_keyboard(board: chess.Board, selected=None):
+    keyboard = []
+    squares = chess.SQUARES
+    for rank in range(7, -1, -1):
+        row = []
+        for file in range(8):
+            square = rank * 8 + file
+            piece = board.piece_at(square)
+            symbol = UNICODE_PIECES.get(piece.symbol(), " ") if piece else "·"
+            text = f"[{symbol}]" if selected == square else symbol
+            row.append(InlineKeyboardButton(text, callback_data=f"square_{square}"))
+        keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
+
 
 def make_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 Chơi với người", callback_data="mode_pvp")],
+        [InlineKeyboardButton("👥 Chơi 2 người", callback_data="mode_pvp")],
         [InlineKeyboardButton("🤖 Chơi với máy", callback_data="mode_ai")]
     ])
 
-async def send_board(update_or_ctx, chat_id, game):
-    board_img = render_board(game["board"])
-    keyboard = [[InlineKeyboardButton("Chọn quân", callback_data="select")]]
-    await update_or_ctx.bot.send_photo(chat_id, photo=board_img, caption="Bàn cờ hiện tại", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# === Commands ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Nhà phát triển: Tô Minh Điềm\nChọn chế độ chơi:", reply_markup=make_menu())
+async def send_board(context, chat_id, game):
+    board = game["board"]
+    turn = "Trắng" if board.turn == chess.WHITE else "Đen"
+    caption = f"Lượt: {turn}"
+    if board.is_check():
+        caption += " ⚠️ Chiếu!"
+    if board.is_game_over():
+        caption += " ✅ Kết thúc ván!"
+    markup = make_board_keyboard(board, game["selected"])
+    await context.bot.send_message(chat_id, caption, reply_markup=markup)
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📖 Hướng dẫn cơ bản:\n"
-        "- Quân vua: đi 1 ô (ngang/dọc/chéo)\n"
-        "- Quân hậu: đi ngang/dọc/chéo thoải mái\n"
-        "- Quân xe: đi ngang/dọc\n"
-        "- Quân tượng: đi chéo\n"
-        "- Quân mã: đi chữ L\n"
-        "- Tốt: đi lên 1 ô (nước đầu có thể đi 2), ăn chéo\n\n"
-        "Bạn không cần gõ lệnh e2e4 — chỉ cần bấm vào quân và bấm ô muốn đi.\n"
-        "Dùng /start để chọn chế độ, hoặc /help để xem hướng dẫn lại."
-    )
-    await update.message.reply_text(text)
 
-# === Callbacks ===
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-
-    if query.data.startswith("mode_"):
-        mode = "ai" if query.data == "mode_ai" else "pvp"
-        GAMES[chat_id] = {"board": chess.Board(), "mode": mode, "selected": None}
-        await query.edit_message_text(f"Đã chọn chế độ: {'Chơi với máy 🤖' if mode=='ai' else 'Chơi 2 người 👥'}")
-        await send_board(context, chat_id, GAMES[chat_id])
-
-    # (Có thể mở rộng: chọn quân, chọn ô, v.v. - do đây là bản rút gọn)
-    # Thực tế bạn có thể tạo inline keyboard 8x8 để người chơi chọn quân và ô.
-
-async def move_random_ai(chat_id, context):
+async def ai_move(chat_id, context):
     game = GAMES.get(chat_id)
     if not game:
         return
@@ -79,17 +66,89 @@ async def move_random_ai(chat_id, context):
     board.push(move)
     await send_board(context, chat_id, game)
 
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Nhà phát triển: Tô Minh Điềm\nChọn chế độ chơi:",
+        reply_markup=make_menu()
+    )
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📖 Hướng dẫn cơ bản:\n\n"
+        "♔ Vua: đi 1 ô (ngang, dọc, chéo)\n"
+        "♕ Hậu: đi ngang/dọc/chéo bao xa cũng được\n"
+        "♖ Xe: đi ngang/dọc\n"
+        "♗ Tượng: đi chéo\n"
+        "♘ Mã: đi chữ L\n"
+        "♙ Tốt: đi thẳng, ăn chéo\n\n"
+        "💡 Bạn chỉ cần bấm ô quân muốn đi ➜ bấm ô đích.\n"
+        "Bot sẽ kiểm tra nước đi hợp lệ và cập nhật bàn cờ."
+    )
+    await update.message.reply_text(text)
+
+
+async def chess_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    GAMES[chat_id] = {"board": chess.Board(), "mode": "pvp", "selected": None}
+    await update.message.reply_text("Ván mới bắt đầu!")
+    await send_board(context, chat_id, GAMES[chat_id])
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+
+    if query.data.startswith("mode_"):
+        mode = "ai" if query.data == "mode_ai" else "pvp"
+        GAMES[chat_id] = {"board": chess.Board(), "mode": mode, "selected": None}
+        await query.edit_message_text(
+            f"Đã chọn chế độ: {'Chơi với máy 🤖' if mode=='ai' else 'Chơi 2 người 👥'}"
+        )
+        await send_board(context, chat_id, GAMES[chat_id])
+        return
+
+    if query.data.startswith("square_"):
+        square = int(query.data.split("_")[1])
+        game = GAMES.get(chat_id)
+        if not game:
+            await query.edit_message_text("Chưa có ván. Gõ /chess để bắt đầu.")
+            return
+
+        board = game["board"]
+        if game["selected"] is None:
+            # Lần bấm đầu -> chọn quân
+            piece = board.piece_at(square)
+            if piece and piece.color == board.turn:
+                game["selected"] = square
+            await send_board(context, chat_id, game)
+        else:
+            # Lần bấm thứ hai -> chọn ô đích
+            move = chess.Move(game["selected"], square)
+            if move in board.legal_moves:
+                board.push(move)
+            game["selected"] = None
+            await send_board(context, chat_id, game)
+            if game["mode"] == "ai" and not board.is_game_over():
+                await ai_move(chat_id, context)
+
+
 def main():
     if not TOKEN:
-        logger.error("BOT_TOKEN chưa đặt.")
+        logger.error("BOT_TOKEN chưa được đặt.")
         return
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("chess", chess_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Bot cờ vua đang chạy với nút bấm + AI.")
+
+    logger.info("Bot cờ vua nút bấm đang chạy...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
