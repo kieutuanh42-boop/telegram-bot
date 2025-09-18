@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
-GAMES = {}  # chat_id -> {"board": chess.Board(), "mode": "pvp"/"ai", "selected": None}
+GAMES = {}  # chat_id -> {"board": ..., "mode": ..., "selected": ..., "msg_id": ...}
 
 UNICODE_PIECES = {
     "P": "♙", "p": "♟",
@@ -23,7 +23,6 @@ UNICODE_PIECES = {
 
 def make_board_keyboard(board: chess.Board, selected=None):
     keyboard = []
-    squares = chess.SQUARES
     for rank in range(7, -1, -1):
         row = []
         for file in range(8):
@@ -36,14 +35,8 @@ def make_board_keyboard(board: chess.Board, selected=None):
     return InlineKeyboardMarkup(keyboard)
 
 
-def make_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 Chơi 2 người", callback_data="mode_pvp")],
-        [InlineKeyboardButton("🤖 Chơi với máy", callback_data="mode_ai")]
-    ])
-
-
-async def send_board(context, chat_id, game):
+async def update_board_message(context, chat_id, game):
+    """Cập nhật lại tin nhắn bàn cờ thay vì gửi tin mới"""
     board = game["board"]
     turn = "Trắng" if board.turn == chess.WHITE else "Đen"
     caption = f"Lượt: {turn}"
@@ -52,7 +45,17 @@ async def send_board(context, chat_id, game):
     if board.is_game_over():
         caption += " ✅ Kết thúc ván!"
     markup = make_board_keyboard(board, game["selected"])
-    await context.bot.send_message(chat_id, caption, reply_markup=markup)
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=game["msg_id"],
+            text=caption,
+            reply_markup=markup
+        )
+    except:
+        # Nếu message bị xóa, gửi lại mới
+        msg = await context.bot.send_message(chat_id, caption, reply_markup=markup)
+        game["msg_id"] = msg.message_id
 
 
 async def ai_move(chat_id, context):
@@ -64,14 +67,26 @@ async def ai_move(chat_id, context):
         return
     move = random.choice(list(board.legal_moves))
     board.push(move)
-    await send_board(context, chat_id, game)
+    await update_board_message(context, chat_id, game)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Nhà phát triển: Tô Minh Điềm\nChọn chế độ chơi:",
-        reply_markup=make_menu()
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 Chơi 2 người", callback_data="mode_pvp")],
+            [InlineKeyboardButton("🤖 Chơi với máy", callback_data="mode_ai")]
+        ])
     )
+
+
+async def chess_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    game = {"board": chess.Board(), "mode": "pvp", "selected": None, "msg_id": None}
+    GAMES[chat_id] = game
+    msg = await update.message.reply_text("Ván mới bắt đầu!", reply_markup=make_board_keyboard(game["board"]))
+    game["msg_id"] = msg.message_id
+    await update_board_message(context, chat_id, game)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,17 +98,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "♗ Tượng: đi chéo\n"
         "♘ Mã: đi chữ L\n"
         "♙ Tốt: đi thẳng, ăn chéo\n\n"
-        "💡 Bạn chỉ cần bấm ô quân muốn đi ➜ bấm ô đích.\n"
-        "Bot sẽ kiểm tra nước đi hợp lệ và cập nhật bàn cờ."
+        "💡 Chỉ cần bấm ô quân ➜ bấm ô đích.\n"
+        "Bot sẽ cập nhật bàn cờ ngay trong 1 tin nhắn duy nhất."
     )
     await update.message.reply_text(text)
-
-
-async def chess_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    GAMES[chat_id] = {"board": chess.Board(), "mode": "pvp", "selected": None}
-    await update.message.reply_text("Ván mới bắt đầu!")
-    await send_board(context, chat_id, GAMES[chat_id])
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -103,11 +111,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data.startswith("mode_"):
         mode = "ai" if query.data == "mode_ai" else "pvp"
-        GAMES[chat_id] = {"board": chess.Board(), "mode": mode, "selected": None}
-        await query.edit_message_text(
-            f"Đã chọn chế độ: {'Chơi với máy 🤖' if mode=='ai' else 'Chơi 2 người 👥'}"
+        game = {"board": chess.Board(), "mode": mode, "selected": None, "msg_id": query.message.message_id}
+        GAMES[chat_id] = game
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=query.message.message_id,
+            text=f"Đã chọn chế độ: {'Chơi với máy 🤖' if mode=='ai' else 'Chơi 2 người 👥'}",
+            reply_markup=None
         )
-        await send_board(context, chat_id, GAMES[chat_id])
+        await update_board_message(context, chat_id, game)
         return
 
     if query.data.startswith("square_"):
@@ -119,18 +131,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         board = game["board"]
         if game["selected"] is None:
-            # Lần bấm đầu -> chọn quân
             piece = board.piece_at(square)
             if piece and piece.color == board.turn:
                 game["selected"] = square
-            await send_board(context, chat_id, game)
+            await update_board_message(context, chat_id, game)
         else:
-            # Lần bấm thứ hai -> chọn ô đích
             move = chess.Move(game["selected"], square)
             if move in board.legal_moves:
                 board.push(move)
             game["selected"] = None
-            await send_board(context, chat_id, game)
+            await update_board_message(context, chat_id, game)
             if game["mode"] == "ai" and not board.is_game_over():
                 await ai_move(chat_id, context)
 
@@ -142,11 +152,11 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("chess", chess_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    logger.info("Bot cờ vua nút bấm đang chạy...")
+    logger.info("Bot cờ vua nút bấm (1 tin nhắn) đang chạy...")
     app.run_polling()
 
 
