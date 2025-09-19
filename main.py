@@ -7,17 +7,14 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === CẤU HÌNH BOT ===
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # <-- Đổi token của bạn ở đây
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Đổi token của bạn
 ADMINS = ["DuRinn_LeTuanDiem", "TraMy_2011"]
 
-# === DỮ LIỆU TRONG RAM ===
-players = {}  # {user_id: {"name":..., "username":..., "balance":..., "win":...}}
+players = {}
 current_game = {"status": False, "bets": {"tai": {}, "xiu": {}}, "history": [], "message": None}
 
 BET_AMOUNTS = [1000, 3000, 10000, 30000, 50000, 100000, 1_000_000, 10_000_000, 100_000_000]
 
-# === HÀM HỖ TRỢ ===
 def format_money(amount):
     if amount >= 1_000_000_000:
         return f"{amount/1_000_000_000:.1f}B"
@@ -42,7 +39,6 @@ def build_game_message():
     xiu_total = sum(current_game["bets"]["xiu"].values())
     tai_count = len(current_game["bets"]["tai"])
     xiu_count = len(current_game["bets"]["xiu"])
-
     history_str = "".join("⚪" if r == "tai" else "⚫" for r in current_game["history"][-10:])
 
     text = f"""
@@ -62,9 +58,11 @@ def build_game_message():
         ],
         [InlineKeyboardButton(f"{format_money(x)}", callback_data=f"bet_amount_{x}") for x in BET_AMOUNTS[:5]],
         [InlineKeyboardButton(f"{format_money(x)}", callback_data=f"bet_amount_{x}") for x in BET_AMOUNTS[5:]],
-        [InlineKeyboardButton("ALL IN", callback_data="bet_all")],
+        [
+            InlineKeyboardButton("ALL IN", callback_data="bet_all"),
+            InlineKeyboardButton("🔄 Reset", callback_data="reset_amount")
+        ],
     ]
-
     return text, InlineKeyboardMarkup(keyboard)
 
 async def start_new_game(context: ContextTypes.DEFAULT_TYPE, chat_id):
@@ -89,6 +87,21 @@ async def start_new_game(context: ContextTypes.DEFAULT_TYPE, chat_id):
     await end_game(context, chat_id)
 
 async def end_game(context, chat_id):
+    # Hiệu ứng nhấp nháy xúc xắc
+    for i in range(3):
+        fake_dice = [random.randint(1, 6) for _ in range(3)]
+        dice_str = " ".join([f"🎲{d}" for d in fake_dice])
+        text = f"""
+🎲 <b>ĐANG QUAY...</b> {dice_str}
+⏳ Chuẩn bị ra kết quả...
+        """
+        await context.bot.edit_message_text(chat_id=chat_id,
+                                            message_id=current_game["message"].message_id,
+                                            text=text,
+                                            parse_mode="HTML")
+        await asyncio.sleep(0.8)
+
+    # Ra kết quả thật
     dice = [random.randint(1, 6) for _ in range(3)]
     total = sum(dice)
     result = "tai" if total >= 11 else "xiu"
@@ -100,7 +113,6 @@ async def end_game(context, chat_id):
     for user_id, bet in winners.items():
         players[user_id]["balance"] += bet * 2
         players[user_id]["win"] += bet
-    # losers đã bị trừ tiền khi đặt cược
 
     dice_str = " ".join([f"🎲{d}" for d in dice])
     text = f"""
@@ -116,7 +128,6 @@ async def end_game(context, chat_id):
     await asyncio.sleep(5)
     await start_new_game(context, chat_id)
 
-# === HANDLERS ===
 async def ontaixiu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.username not in ADMINS:
@@ -139,6 +150,10 @@ async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p = get_player(user)
 
     data = query.data
+    if data == "reset_amount":
+        context.user_data["bet_amount"] = 0
+        return await query.message.reply_text("🔄 Bạn đã reset số tiền cược về 0.")
+
     if data.startswith("bet_amount_"):
         amount = int(data.replace("bet_amount_", ""))
         context.user_data["bet_amount"] = amount
@@ -189,7 +204,6 @@ async def top(update: Update, context):
 async def ruttien(update: Update, context):
     await update.message.reply_text("💸 Để rút tiền vui lòng liên hệ admin:\n👑 @DuRinn_LeTuanDiem hoặc 👑 @TraMy_2011")
 
-# === CHẠY BOT ===
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("ontaixiu", ontaixiu))
