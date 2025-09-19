@@ -5,11 +5,9 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ==== LOGGING ====
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ==== CONFIG ====
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ BOT_TOKEN chưa được cấu hình! Vào Pella.app → Environment Variables để thêm.")
@@ -17,18 +15,17 @@ if not TOKEN:
 ADMINS = ["DuRinn_LeTuanDiem", "TraMy_2011"]
 BET_AMOUNTS = [1000, 3000, 10_000, 30_000, 50_000, 100_000, 1_000_000, 10_000_000, 100_000_000]
 
-# ==== DATA ====
 players = {}
-current_game = {"active": False, "bets": {"tai": {}, "xiu": {}}, "history": [], "message": None}
+current_game = {"active": False, "bets": {"tai": {}, "xiu": {}}, "history": [], "message": None, "chat_id": None}
 
-# ==== UTILS ====
 def format_money(amount): return f"{amount:,}".replace(",", ".")
+
 def get_player(user):
     if user.id not in players:
         players[user.id] = {"name": user.first_name, "username": user.username, "balance": 200_000, "win": 0}
     return players[user.id]
 
-def build_game_message():
+def build_game_message(time_left: int):
     tai_total = sum(current_game["bets"]["tai"].values())
     xiu_total = sum(current_game["bets"]["xiu"].values())
     tai_count = len(current_game["bets"]["tai"])
@@ -36,14 +33,13 @@ def build_game_message():
     history_str = "".join("⚪" if r == "tai" else "⚫" for r in current_game["history"][-10:])
     text = f"""
 🎲 <b>GAME TÀI XỈU</b> 🎲
-<b>⏳ Đang mở cược (30s)...</b>
+<b>⏳ Còn {time_left}s để đặt cược...</b>
 
 <b>🅣🅐🅘</b> 👥{tai_count} | 💰{format_money(tai_total)}
 <b>🅧🅘🅤</b> 👥{xiu_count} | 💰{format_money(xiu_total)}
 
 <b>Lịch sử:</b> {history_str or 'Chưa có'}
     """.strip()
-
     keyboard = [
         [InlineKeyboardButton("🅣🅐🅘", callback_data="bet_tai"), InlineKeyboardButton("🅧🅘🅤", callback_data="bet_xiu")],
         [InlineKeyboardButton(f"{format_money(x)}", callback_data=f"bet_amount_{x}") for x in BET_AMOUNTS[:5]],
@@ -53,18 +49,23 @@ def build_game_message():
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
-# ==== GAME FLOW ====
 async def start_new_game(context, chat_id):
     current_game["bets"] = {"tai": {}, "xiu": {}}
-    text, markup = build_game_message()
+    current_game["chat_id"] = chat_id
+    text, markup = build_game_message(30)
     current_game["message"] = await context.bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
-    context.application.create_task(game_countdown(context, chat_id))
+    context.application.create_task(game_countdown(context))
 
-async def game_countdown(context, chat_id):
-    await asyncio.sleep(30)
-    await end_game(context, chat_id)
+async def game_countdown(context):
+    for t in range(30, 0, -1):
+        text, markup = build_game_message(t)
+        await context.bot.edit_message_text(chat_id=current_game["chat_id"], message_id=current_game["message"].message_id,
+                                            text=text, reply_markup=markup, parse_mode="HTML")
+        await asyncio.sleep(1)
+    await end_game(context)
 
-async def end_game(context, chat_id):
+async def end_game(context):
+    chat_id = current_game["chat_id"]
     tai_total = sum(current_game["bets"]["tai"].values())
     xiu_total = sum(current_game["bets"]["xiu"].values())
     tai_count = len(current_game["bets"]["tai"])
@@ -88,16 +89,17 @@ async def end_game(context, chat_id):
                                             text=text + f"\n\n{dice_str}", parse_mode="HTML")
         await asyncio.sleep(0.7)
 
-    # Kết quả thật
     dice = [random.randint(1, 6) for _ in range(3)]
     total = sum(dice)
     result = "tai" if total >= 11 else "xiu"
     current_game["history"].append(result)
 
     winners = current_game["bets"][result]
+    winners_text = []
     for user_id, bet in winners.items():
         players[user_id]["balance"] += bet * 2
         players[user_id]["win"] += bet
+        winners_text.append(f"✅ <b>{players[user_id]['name']}</b> thắng {format_money(bet)}")
 
     dice_str = " ".join([f"🎲{d}" for d in dice])
     result_text = f"""
@@ -107,13 +109,15 @@ async def end_game(context, chat_id):
 📊 <b>Tổng cược:</b>
 🅣🅐🅘: {format_money(tai_total)} | 🅧🅘🅤: {format_money(xiu_total)}
 
+🏆 <b>Người thắng:</b>
+{chr(10).join(winners_text) if winners_text else '❌ Không ai thắng'}
+
 🔄 Ván mới sau 5s...
     """.strip()
     await context.bot.edit_message_text(chat_id=chat_id, message_id=current_game["message"].message_id, text=result_text, parse_mode="HTML")
     await asyncio.sleep(5)
     await start_new_game(context, chat_id)
 
-# ==== HANDLERS ====
 async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -125,27 +129,28 @@ async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.message.reply_text(f"👤 {p['name']}\n🔗 @{p['username']}\n💰 {format_money(p['balance'])}\n🏆 {format_money(p['win'])}")
     if data == "reset_amount":
         context.user_data["bet_amount"] = 0
-        return await query.message.reply_text("🔄 Đã reset tiền cược.")
+        return await query.answer("🔄 Đã reset tiền cược.", show_alert=True)
     if data.startswith("bet_amount_"):
         context.user_data["bet_amount"] = int(data.split("_")[-1])
-        return await query.message.reply_text(f"💰 Đã chọn {format_money(context.user_data['bet_amount'])}")
+        return await query.answer(f"💰 Chọn {format_money(context.user_data['bet_amount'])}", show_alert=True)
     if data == "bet_all":
         context.user_data["bet_amount"] = p["balance"]
-        return await query.message.reply_text(f"💰 ALL IN {format_money(p['balance'])}!")
+        return await query.answer(f"💰 ALL IN {format_money(p['balance'])}!", show_alert=True)
 
     if data in ("bet_tai", "bet_xiu"):
         amount = context.user_data.get("bet_amount", 0)
         if amount <= 0:
-            return await query.message.reply_text("⚠️ Chọn số tiền trước!")
+            return await query.answer("⚠️ Chọn số tiền trước!", show_alert=True)
         if p["balance"] < amount:
-            return await query.message.reply_text("⚠️ Hết tiền! Bấm /nhantienfree để nhận 200k.")
+            return await query.answer("⚠️ Hết tiền! Dùng /nhantienfree.", show_alert=True)
         side = "tai" if data == "bet_tai" else "xiu"
         current_game["bets"][side][user.id] = current_game["bets"][side].get(user.id, 0) + amount
         p["balance"] -= amount
-        text, markup = build_game_message()
+        text, markup = build_game_message(30)
         await context.bot.edit_message_text(chat_id=query.message.chat_id, message_id=query.message.message_id,
                                             text=text, reply_markup=markup, parse_mode="HTML")
 
+# Các command cũ giữ nguyên
 async def nhantienfree(update: Update, context):
     p = get_player(update.effective_user)
     if p["username"] in ADMINS:
@@ -183,7 +188,7 @@ async def offtaixiu(update: Update, context):
     current_game["active"] = False
     await update.message.reply_text("⛔ Đã tắt Tài Xỉu!")
 
-# ==== MAIN ====
+# MAIN
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("nhantienfree", nhantienfree))
 app.add_handler(CommandHandler("sodu", sodu))
