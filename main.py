@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -14,7 +15,6 @@ CURRENT_GAME = {}  # chat_id -> {"bets": {"tai": [], "xiu": []}, "amount": 0, "m
 
 
 def fmt_money(n):
-    """Định dạng tiền cho đẹp"""
     if n >= 1_000_000:
         return f"{n // 1_000_000}m"
     if n >= 1_000:
@@ -25,7 +25,7 @@ def fmt_money(n):
 async def nhan_tien_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     BALANCES[user_id] = BALANCES.get(user_id, 0) + 200_000
-    await update.message.reply_text(f"💰 Bạn đã nhận 200k! Số dư: {fmt_money(BALANCES[user_id])}")
+    await update.message.reply_text(f"💰 Bạn nhận 200k! Số dư: {fmt_money(BALANCES[user_id])}")
 
 
 async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -44,75 +44,73 @@ async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+async def start_round(context: ContextTypes.DEFAULT_TYPE, chat_id):
+    # tạo ván mới
     CURRENT_GAME[chat_id] = {"bets": {"tai": [], "xiu": []}, "amount": 0, "msg_id": None, "open": True}
     keyboard = [
-        [InlineKeyboardButton("🎲 Tài", callback_data="bet_tai"),
-         InlineKeyboardButton("🎲 Xỉu", callback_data="bet_xiu")],
+        [InlineKeyboardButton("🎲 TÀI", callback_data="bet_tai"),
+         InlineKeyboardButton("🎲 XỈU", callback_data="bet_xiu")],
         [InlineKeyboardButton("1k", callback_data="amt_1000"),
-         InlineKeyboardButton("2k", callback_data="amt_2000"),
-         InlineKeyboardButton("5k", callback_data="amt_5000")],
-        [InlineKeyboardButton("10k", callback_data="amt_10000"),
-         InlineKeyboardButton("50k", callback_data="amt_50000"),
+         InlineKeyboardButton("10k", callback_data="amt_10000"),
          InlineKeyboardButton("100k", callback_data="amt_100000")],
         [InlineKeyboardButton("1m", callback_data="amt_1000000"),
          InlineKeyboardButton("10m", callback_data="amt_10000000"),
-         InlineKeyboardButton("100m", callback_data="amt_100000000"),
-         InlineKeyboardButton("All-in", callback_data="amt_all")],
-        [InlineKeyboardButton("✅ Chốt kèo", callback_data="close_game")]
+         InlineKeyboardButton("All-in", callback_data="amt_all")]
     ]
-    msg = await update.message.reply_text(
-        "🎰 Game Tài Xỉu bắt đầu!\nChọn số tiền và bên để cược.",
+    msg = await context.bot.send_message(
+        chat_id,
+        "🎮 Ván Tài Xỉu mới bắt đầu!\n⏳ Bạn có 30s để cược.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     CURRENT_GAME[chat_id]["msg_id"] = msg.message_id
 
+    # đợi 30 giây rồi chốt kèo
+    await asyncio.sleep(30)
+    await close_round(context, chat_id)
+
 
 async def update_board_message(context, chat_id, game):
-    tai_names = ", ".join([f"{name}({fmt_money(a)})" for name, _, a in game["bets"]["tai"]]) or "Chưa ai"
-    xiu_names = ", ".join([f"{name}({fmt_money(a)})" for name, _, a in game["bets"]["xiu"]]) or "Chưa ai"
-    text = (f"🎲 Game Tài Xỉu đang mở!\n"
-            f"💰 Cược: {fmt_money(game['amount']) if game['amount'] else 'Chưa chọn'}\n\n"
-            f"🔥 Tài ({len(game['bets']['tai'])}): {tai_names}\n"
-            f"❄️ Xỉu ({len(game['bets']['xiu'])}): {xiu_names}")
+    tai_list = "\n".join([f"🎲 {name} ({fmt_money(a)})" for name, _, a in game["bets"]["tai"]]) or "Chưa ai"
+    xiu_list = "\n".join([f"🎲 {name} ({fmt_money(a)})" for name, _, a in game["bets"]["xiu"]]) or "Chưa ai"
+    text = (f"🎮 ĐANG CƯỢC...\n"
+            f"💰 Mức: {fmt_money(game['amount']) if game['amount'] else 'Chưa chọn'}\n\n"
+            f"🔴 Tài:\n{tai_list}\n\n🔵 Xỉu:\n{xiu_list}")
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=game["msg_id"],
             text=text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎲 Tài", callback_data="bet_tai"),
-                 InlineKeyboardButton("🎲 Xỉu", callback_data="bet_xiu")],
+                [InlineKeyboardButton("🎲 TÀI", callback_data="bet_tai"),
+                 InlineKeyboardButton("🎲 XỈU", callback_data="bet_xiu")],
                 [InlineKeyboardButton("1k", callback_data="amt_1000"),
-                 InlineKeyboardButton("2k", callback_data="amt_2000"),
-                 InlineKeyboardButton("5k", callback_data="amt_5000")],
-                [InlineKeyboardButton("10k", callback_data="amt_10000"),
-                 InlineKeyboardButton("50k", callback_data="amt_50000"),
+                 InlineKeyboardButton("10k", callback_data="amt_10000"),
                  InlineKeyboardButton("100k", callback_data="amt_100000")],
                 [InlineKeyboardButton("1m", callback_data="amt_1000000"),
                  InlineKeyboardButton("10m", callback_data="amt_10000000"),
-                 InlineKeyboardButton("100m", callback_data="amt_100000000"),
-                 InlineKeyboardButton("All-in", callback_data="amt_all")],
-                [InlineKeyboardButton("✅ Chốt kèo", callback_data="close_game")]
+                 InlineKeyboardButton("All-in", callback_data="amt_all")]
             ])
         )
     except:
         pass
 
 
-async def close_game(chat_id, context):
+async def close_round(context, chat_id):
     game = CURRENT_GAME.get(chat_id)
-    if not game:
+    if not game or not game["open"]:
         return
     game["open"] = False
 
+    # tung 3 xúc xắc
     dice = [random.randint(1, 6) for _ in range(3)]
     total = sum(dice)
     result = "tai" if total >= 11 else "xiu"
-    winners = game["bets"][result]
 
-    text = f"🎲 Kết quả: {' + '.join(map(str, dice))} = {total} → {'TÀI' if result == 'tai' else 'XỈU'}\n"
+    # hiển thị xúc xắc bằng emoji 🎲
+    dice_emoji = "".join(["🎲" for _ in dice])
+    text = f"🎯 Kết quả: {dice_emoji} = {total} → {'TÀI' if result == 'tai' else 'XỈU'}\n"
+
+    winners = game["bets"][result]
     if winners:
         text += "🏆 Người thắng:\n"
         for name, uid, amt in winners:
@@ -124,20 +122,23 @@ async def close_game(chat_id, context):
 
     await context.bot.send_message(chat_id, text)
 
+    # mở ván mới tự động
+    await asyncio.sleep(3)
+    await start_round(context, chat_id)
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
         await query.answer()
     except:
-        return  # callback đã hết hạn, bỏ qua
+        return
 
     user = query.from_user
     chat_id = query.message.chat_id
     game = CURRENT_GAME.get(chat_id)
 
     if not game or not game["open"]:
-        await query.edit_message_text("⚠️ Không có ván cược đang mở. Gõ /taixiu để mở ván mới.")
         return
 
     if query.data.startswith("amt_"):
@@ -164,8 +165,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         game["bets"][side].append((user.first_name, user.id, game["amount"]))
         await update_board_message(context, chat_id, game)
 
-    if query.data == "close_game":
-        await close_game(chat_id, context)
+
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    await update.message.reply_text("🎲 Tài Xỉu Auto đã bật! Mỗi 30s sẽ mở ván mới.")
+    await start_round(context, chat_id)
 
 
 def main():
@@ -174,11 +178,11 @@ def main():
         return
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("nhantienfree", nhan_tien_free))
-    app.add_handler(CommandHandler("taixiu", start_game))
     app.add_handler(CommandHandler("top", top_cmd))
+    app.add_handler(CommandHandler("taixiu", start_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    logger.info("Bot Tài Xỉu (fix callback + /top) đã khởi động...")
+    logger.info("Bot Tài Xỉu Auto đã khởi động...")
     app.run_polling()
 
 
