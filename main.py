@@ -16,25 +16,14 @@ ADMINS = ["DuRinn_LeTuanDiem", "TraMy_2011"]
 BET_AMOUNTS = [1000, 3000, 10_000, 30_000, 50_000, 100_000, 1_000_000, 10_000_000, 100_000_000]
 
 players = {}
-current_game = {
-    "active": False,
-    "bets": {"tai": {}, "xiu": {}},
-    "history": [],
-    "message": None,
-    "chat_id": None
-}
+current_game = {"active": False, "bets": {"tai": {}, "xiu": {}}, "history": [], "message": None, "chat_id": None}
 
 def format_money(amount): 
     return f"{amount:,}".replace(",", ".")
 
 def get_player(user):
     if user.id not in players:
-        players[user.id] = {
-            "name": user.first_name,
-            "username": user.username,
-            "balance": 200_000,
-            "win": 0
-        }
+        players[user.id] = {"name": user.first_name, "username": user.username, "balance": 200_000, "win": 0}
     return players[user.id]
 
 def build_game_message(time_left: int):
@@ -43,7 +32,6 @@ def build_game_message(time_left: int):
     tai_count = len(current_game["bets"]["tai"])
     xiu_count = len(current_game["bets"]["xiu"])
     history_str = "".join("⚪" if r == "tai" else "⚫" for r in current_game["history"][-10:])
-
     text = f"""
 🎲 <b>GAME TÀI XỈU</b> 🎲
 <b>⏳ Còn {time_left}s để đặt cược...</b>
@@ -53,19 +41,17 @@ def build_game_message(time_left: int):
 
 <b>Lịch sử:</b> {history_str or 'Chưa có'}
     """.strip()
-
     keyboard = [
-        [InlineKeyboardButton("🅣🅐🅘", callback_data="bet_tai"),
-         InlineKeyboardButton("🅧🅘🅤", callback_data="bet_xiu")],
+        [InlineKeyboardButton("🅣🅐🅘", callback_data="bet_tai"), InlineKeyboardButton("🅧🅘🅤", callback_data="bet_xiu")],
         [InlineKeyboardButton(f"{format_money(x)}", callback_data=f"bet_amount_{x}") for x in BET_AMOUNTS[:5]],
         [InlineKeyboardButton(f"{format_money(x)}", callback_data=f"bet_amount_{x}") for x in BET_AMOUNTS[5:]],
-        [InlineKeyboardButton("ALL IN", callback_data="bet_all"),
-         InlineKeyboardButton("🔄 Reset", callback_data="reset_amount")],
+        [InlineKeyboardButton("ALL IN", callback_data="bet_all"), InlineKeyboardButton("🔄 Reset", callback_data="reset_amount")],
         [InlineKeyboardButton("👤 Số dư", callback_data="check_balance")]
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
 async def start_new_game(context, chat_id):
+    # Reset game mới
     current_game["bets"] = {"tai": {}, "xiu": {}}
     current_game["chat_id"] = chat_id
     text, markup = build_game_message(30)
@@ -93,7 +79,6 @@ async def end_game(context):
     xiu_total = sum(current_game["bets"]["xiu"].values())
     tai_count = len(current_game["bets"]["tai"])
     xiu_count = len(current_game["bets"]["xiu"])
-
     text = f"""
 🏁 <b>ĐÓNG CƯỢC!</b>
 
@@ -122,26 +107,23 @@ async def end_game(context):
         )
         await asyncio.sleep(0.7)
 
-    # Kết quả thật
     dice = [random.randint(1, 6) for _ in range(3)]
     total = sum(dice)
     result = "tai" if total >= 11 else "xiu"
     current_game["history"].append(result)
 
     winners = current_game["bets"][result]
+    losers = current_game["bets"]["tai"] if result == "xiu" else current_game["bets"]["xiu"]
+
     winners_text = []
     for user_id, bet in winners.items():
         players[user_id]["balance"] += bet * 2
         players[user_id]["win"] += bet
         winners_text.append(f"✅ <b>{players[user_id]['name']}</b> thắng {format_money(bet)}")
 
-    # Top thắng trong phiên (xếp theo tiền thắng)
-    top_round = sorted(winners.items(), key=lambda x: x[1], reverse=True)
-    top_text = ""
-    for i, (uid, money) in enumerate(top_round, 1):
-        user = players[uid]
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        top_text += f"{medal} {user['name']} +{format_money(money)}\n"
+    losers_text = []
+    for user_id, bet in losers.items():
+        losers_text.append(f"❌ <b>{players[user_id]['name']}</b> thua {format_money(bet)}")
 
     dice_str = " ".join([f"🎲{d}" for d in dice])
     result_text = f"""
@@ -154,18 +136,30 @@ async def end_game(context):
 🏆 <b>Người thắng:</b>
 {chr(10).join(winners_text) if winners_text else '❌ Không ai thắng'}
 
-📈 <b>TOP phiên này:</b>
-{top_text or '❌ Không có'}
-    
+💀 <b>Người thua:</b>
+{chr(10).join(losers_text) if losers_text else '❌ Không ai thua'}
+
 🔄 Ván mới sau 5s...
     """.strip()
+
     await context.bot.edit_message_text(
         chat_id=chat_id,
         message_id=current_game["message"].message_id,
         text=result_text,
         parse_mode="HTML"
     )
+
+    # Chờ 5s rồi xóa message kết quả
     await asyncio.sleep(5)
+    try:
+        await context.bot.delete_message(
+            chat_id=chat_id,
+            message_id=current_game["message"].message_id
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ Không xóa được message cũ: {e}")
+
+    # Mở phiên mới
     await start_new_game(context, chat_id)
 
 async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,7 +210,7 @@ async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
 
-# Các command
+# Command
 async def nhantienfree(update: Update, context):
     p = get_player(update.effective_user)
     if p["username"] in ADMINS:
