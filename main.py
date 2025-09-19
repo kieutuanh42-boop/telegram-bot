@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-BALANCES = {}  # user_id -> số dư
-CURRENT_GAME = {}  # chat_id -> {bets, amount, msg_id, open}
+BALANCES = {}  # user_id -> money
+CURRENT_GAME = {}  # chat_id -> {bets, amount, msg_id, open, countdown}
 
 
 def fmt_money(n):
@@ -45,12 +45,27 @@ async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start_round(context: ContextTypes.DEFAULT_TYPE, chat_id):
-    CURRENT_GAME[chat_id] = {"bets": {"tai": [], "xiu": []}, "amount": 0, "msg_id": None, "open": True}
-    msg = await context.bot.send_message(chat_id, await build_game_text(chat_id), reply_markup=build_keyboard())
+    CURRENT_GAME[chat_id] = {"bets": {"tai": [], "xiu": []},
+                             "amount": 0,
+                             "msg_id": None,
+                             "open": True,
+                             "countdown": 30}
+    msg = await context.bot.send_message(chat_id, await build_game_text(chat_id),
+                                         reply_markup=build_keyboard())
     CURRENT_GAME[chat_id]["msg_id"] = msg.message_id
 
-    await asyncio.sleep(30)
-    await close_round(context, chat_id)
+    # Bắt đầu đếm ngược song song
+    asyncio.create_task(countdown_timer(context, chat_id))
+
+
+async def countdown_timer(context, chat_id):
+    while CURRENT_GAME.get(chat_id, {}).get("open") and CURRENT_GAME[chat_id]["countdown"] > 0:
+        await asyncio.sleep(5)
+        CURRENT_GAME[chat_id]["countdown"] -= 5
+        await update_board(context, chat_id)
+
+    if CURRENT_GAME.get(chat_id, {}).get("open"):
+        await close_round(context, chat_id)
 
 
 def build_keyboard():
@@ -76,7 +91,7 @@ async def build_game_text(chat_id):
     xiu_count = len(game["bets"]["xiu"])
 
     return (f"🎲 **TÀI XỈU** 🎲\n"
-            f"⏳ Còn 30s để cược!\n\n"
+            f"⏳ Còn {game['countdown']}s để cược!\n\n"
             f"🔴 **TÀI**: {fmt_money(tai_total)} ({tai_count} người)\n"
             f"🔵 **XỈU**: {fmt_money(xiu_total)} ({xiu_count} người)\n\n"
             f"💰 Mức đặt: {fmt_money(game['amount']) if game['amount'] else 'Chưa chọn'}")
@@ -100,12 +115,17 @@ async def close_round(context, chat_id):
         return
     game["open"] = False
 
-    dice = [random.randint(1, 6) for _ in range(3)]
-    total = sum(dice)
+    # Gửi 3 xúc xắc thật
+    dice_values = []
+    for _ in range(3):
+        d = await context.bot.send_dice(chat_id, emoji="🎲")
+        dice_values.append(d.dice.value)
+        await asyncio.sleep(2)  # chờ tung xong
+
+    total = sum(dice_values)
     result = "tai" if total >= 11 else "xiu"
 
-    dice_emoji = "".join(["🎲" for _ in dice])
-    text = f"🎯 Kết quả: {dice_emoji} = {total} → {'TÀI' if result == 'tai' else 'XỈU'}\n"
+    text = f"🎯 Kết quả: {''.join(['🎲' for _ in range(3)])} = {total} → {'TÀI' if result == 'tai' else 'XỈU'}\n"
 
     winners = game["bets"][result]
     if winners:
