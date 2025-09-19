@@ -1,162 +1,143 @@
 import os
-import logging
 import random
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import chess
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
-GAMES = {}  # chat_id -> {"board": ..., "mode": ..., "selected": ..., "msg_id": ...}
 
-UNICODE_PIECES = {
-    "P": "♙", "p": "♟",
-    "R": "♖", "r": "♜",
-    "N": "♘", "n": "♞",
-    "B": "♗", "b": "♝",
-    "Q": "♕", "q": "♛",
-    "K": "♔", "k": "♚",
-}
+# Dữ liệu game và số dư user
+BALANCES = {}  # user_id -> tiền
+CURRENT_GAME = {}  # chat_id -> {"bets": {"tai": [], "xiu": []}, "amount": 0, "msg_id": None, "open": False}
 
 
-def make_board_keyboard(board: chess.Board, selected=None):
-    keyboard = []
-    for rank in range(7, -1, -1):
-        row = []
-        for file in range(8):
-            square = rank * 8 + file
-            piece = board.piece_at(square)
-            symbol = UNICODE_PIECES.get(piece.symbol(), " ") if piece else "·"
-            text = f"[{symbol}]" if selected == square else symbol
-            row.append(InlineKeyboardButton(text, callback_data=f"square_{square}"))
-        keyboard.append(row)
-    return InlineKeyboardMarkup(keyboard)
+def fmt_money(n):
+    if n >= 1_000_000:
+        return f"{n // 1_000_000}m"
+    if n >= 1_000:
+        return f"{n // 1_000}k"
+    return str(n)
 
 
-async def update_board_message(context, chat_id, game):
-    """Cập nhật lại tin nhắn bàn cờ thay vì gửi tin mới"""
-    board = game["board"]
-    turn = "Trắng" if board.turn == chess.WHITE else "Đen"
-    caption = f"Lượt: {turn}"
-    if board.is_check():
-        caption += " ⚠️ Chiếu!"
-    if board.is_game_over():
-        caption += " ✅ Kết thúc ván!"
-    markup = make_board_keyboard(board, game["selected"])
-    try:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=game["msg_id"],
-            text=caption,
-            reply_markup=markup
-        )
-    except:
-        # Nếu message bị xóa, gửi lại mới
-        msg = await context.bot.send_message(chat_id, caption, reply_markup=markup)
-        game["msg_id"] = msg.message_id
+async def nhan_tien_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    BALANCES[user_id] = BALANCES.get(user_id, 0) + 200_000
+    await update.message.reply_text(f"💰 Bạn đã nhận 200k! Số dư hiện tại: {fmt_money(BALANCES[user_id])}")
 
 
-async def ai_move(chat_id, context):
-    game = GAMES.get(chat_id)
-    if not game:
-        return
-    board = game["board"]
-    if board.is_game_over():
-        return
-    move = random.choice(list(board.legal_moves))
-    board.push(move)
-    await update_board_message(context, chat_id, game)
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Nhà phát triển: Tô Minh Điềm\nChọn chế độ chơi:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("👥 Chơi 2 người", callback_data="mode_pvp")],
-            [InlineKeyboardButton("🤖 Chơi với máy", callback_data="mode_ai")]
-        ])
-    )
-
-
-async def chess_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    game = {"board": chess.Board(), "mode": "pvp", "selected": None, "msg_id": None}
-    GAMES[chat_id] = game
-    msg = await update.message.reply_text("Ván mới bắt đầu!", reply_markup=make_board_keyboard(game["board"]))
-    game["msg_id"] = msg.message_id
-    await update_board_message(context, chat_id, game)
-
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📖 Hướng dẫn cơ bản:\n\n"
-        "♔ Vua: đi 1 ô (ngang, dọc, chéo)\n"
-        "♕ Hậu: đi ngang/dọc/chéo bao xa cũng được\n"
-        "♖ Xe: đi ngang/dọc\n"
-        "♗ Tượng: đi chéo\n"
-        "♘ Mã: đi chữ L\n"
-        "♙ Tốt: đi thẳng, ăn chéo\n\n"
-        "💡 Chỉ cần bấm ô quân ➜ bấm ô đích.\n"
-        "Bot sẽ cập nhật bàn cờ ngay trong 1 tin nhắn duy nhất."
-    )
-    await update.message.reply_text(text)
+    CURRENT_GAME[chat_id] = {"bets": {"tai": [], "xiu": []}, "amount": 0, "msg_id": None, "open": True}
+    keyboard = [
+        [InlineKeyboardButton("🎲 Tài", callback_data="bet_tai"),
+         InlineKeyboardButton("🎲 Xỉu", callback_data="bet_xiu")],
+        [InlineKeyboardButton("1k", callback_data="amt_1000"),
+         InlineKeyboardButton("2k", callback_data="amt_2000"),
+         InlineKeyboardButton("5k", callback_data="amt_5000")],
+        [InlineKeyboardButton("10k", callback_data="amt_10000"),
+         InlineKeyboardButton("50k", callback_data="amt_50000"),
+         InlineKeyboardButton("100k", callback_data="amt_100000")],
+        [InlineKeyboardButton("1m", callback_data="amt_1000000"),
+         InlineKeyboardButton("10m", callback_data="amt_10000000"),
+         InlineKeyboardButton("100m", callback_data="amt_100000000"),
+         InlineKeyboardButton("All-in", callback_data="amt_all")],
+        [InlineKeyboardButton("✅ Chốt kèo", callback_data="close_game")]
+    ]
+    msg = await update.message.reply_text("🎰 Game Tài Xỉu bắt đầu!\nChọn số tiền và bên để cược.", 
+                                          reply_markup=InlineKeyboardMarkup(keyboard))
+    CURRENT_GAME[chat_id]["msg_id"] = msg.message_id
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user = query.from_user
     chat_id = query.message.chat_id
+    game = CURRENT_GAME.get(chat_id)
 
-    if query.data.startswith("mode_"):
-        mode = "ai" if query.data == "mode_ai" else "pvp"
-        game = {"board": chess.Board(), "mode": mode, "selected": None, "msg_id": query.message.message_id}
-        GAMES[chat_id] = game
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=query.message.message_id,
-            text=f"Đã chọn chế độ: {'Chơi với máy 🤖' if mode=='ai' else 'Chơi 2 người 👥'}",
-            reply_markup=None
-        )
-        await update_board_message(context, chat_id, game)
+    if not game or not game["open"]:
+        await query.edit_message_text("⚠️ Không có ván cược đang mở. Gõ /taixiu để mở ván mới.")
         return
 
-    if query.data.startswith("square_"):
-        square = int(query.data.split("_")[1])
-        game = GAMES.get(chat_id)
-        if not game:
-            await query.edit_message_text("Chưa có ván. Gõ /chess để bắt đầu.")
+    if query.data.startswith("amt_"):
+        amount = query.data.split("_")[1]
+        if amount == "all":
+            game["amount"] = BALANCES.get(user.id, 0)
+        else:
+            game["amount"] = int(amount)
+        await query.answer(f"💵 Bạn chọn cược {fmt_money(game['amount'])}")
+        return
+
+    if query.data.startswith("bet_"):
+        if game["amount"] <= 0:
+            await query.answer("⚠️ Bạn chưa chọn số tiền!", show_alert=True)
             return
 
-        board = game["board"]
-        if game["selected"] is None:
-            piece = board.piece_at(square)
-            if piece and piece.color == board.turn:
-                game["selected"] = square
-            await update_board_message(context, chat_id, game)
-        else:
-            move = chess.Move(game["selected"], square)
-            if move in board.legal_moves:
-                board.push(move)
-            game["selected"] = None
-            await update_board_message(context, chat_id, game)
-            if game["mode"] == "ai" and not board.is_game_over():
-                await ai_move(chat_id, context)
+        BALANCES[user.id] = BALANCES.get(user.id, 0)
+        if BALANCES[user.id] < game["amount"]:
+            await query.answer("💸 Bạn không đủ tiền!", show_alert=True)
+            return
+
+        side = "tai" if query.data == "bet_tai" else "xiu"
+        BALANCES[user.id] -= game["amount"]
+        game["bets"][side].append((user.first_name, user.id, game["amount"]))
+        await update_board_message(context, chat_id, game)
+
+    if query.data == "close_game":
+        await close_game(chat_id, context)
+
+
+async def update_board_message(context, chat_id, game):
+    tai_names = ", ".join([f"{name}({fmt_money(a)})" for name, _, a in game["bets"]["tai"]]) or "Chưa ai"
+    xiu_names = ", ".join([f"{name}({fmt_money(a)})" for name, _, a in game["bets"]["xiu"]]) or "Chưa ai"
+    text = (f"🎲 Game Tài Xỉu đang mở!\n"
+            f"💰 Cược: {fmt_money(game['amount']) if game['amount'] else 'Chưa chọn'}\n\n"
+            f"🔥 Tài ({len(game['bets']['tai'])}): {tai_names}\n"
+            f"❄️ Xỉu ({len(game['bets']['xiu'])}): {xiu_names}")
+    try:
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=game["msg_id"], text=text,
+                                            reply_markup=query.message.reply_markup)
+    except:
+        pass
+
+
+async def close_game(chat_id, context):
+    game = CURRENT_GAME.get(chat_id)
+    if not game:
+        return
+    game["open"] = False
+
+    dice = [random.randint(1, 6) for _ in range(3)]
+    total = sum(dice)
+    result = "tai" if total >= 11 else "xiu"
+    winners = game["bets"][result]
+
+    text = f"🎲 Kết quả: {' + '.join(map(str, dice))} = {total} → {'TÀI' if result == 'tai' else 'XỈU'}\n"
+    if winners:
+        text += "🏆 Người thắng:\n"
+        for name, uid, amt in winners:
+            win_amt = amt * 2
+            BALANCES[uid] = BALANCES.get(uid, 0) + win_amt
+            text += f" - {name}: +{fmt_money(win_amt)} (số dư: {fmt_money(BALANCES[uid])})\n"
+    else:
+        text += "😢 Không ai thắng ván này."
+
+    await context.bot.send_message(chat_id, text)
 
 
 def main():
     if not TOKEN:
-        logger.error("BOT_TOKEN chưa được đặt.")
+        logger.error("BOT_TOKEN chưa được đặt!")
         return
-
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("chess", chess_cmd))
-    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("nhantienfree", nhan_tien_free))
+    app.add_handler(CommandHandler("taixiu", start_game))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    logger.info("Bot cờ vua nút bấm (1 tin nhắn) đang chạy...")
+    logger.info("Bot Tài Xỉu đã khởi động...")
     app.run_polling()
 
 
