@@ -5,19 +5,23 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
+# ================== LOGGING ==================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ================== TOKEN ==================
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("❌ BOT_TOKEN chưa được cấu hình! Vào Pella.app → Environment Variables để thêm.")
+    raise ValueError("❌ BOT_TOKEN chưa được cấu hình!")
 
+# ================== CẤU HÌNH ==================
 ADMINS = ["DuRinn_LeTuanDiem", "TraMy_2011"]
 BET_AMOUNTS = [1000, 3000, 10_000, 30_000, 50_000, 100_000, 1_000_000, 10_000_000, 100_000_000]
 
 players = {}
 current_game = {"active": False, "bets": {"tai": {}, "xiu": {}}, "history": [], "message": None, "chat_id": None}
 
+# ================== HÀM HỖ TRỢ ==================
 def format_money(amount): 
     return f"{amount:,}".replace(",", ".")
 
@@ -50,26 +54,22 @@ def build_game_message(time_left: int):
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
+# ================== GAME ==================
 async def start_new_game(context, chat_id):
-    # Reset game mới
     current_game["bets"] = {"tai": {}, "xiu": {}}
     current_game["chat_id"] = chat_id
     text, markup = build_game_message(30)
-    current_game["message"] = await context.bot.send_message(
-        chat_id, text, reply_markup=markup, parse_mode="HTML"
-    )
+    current_game["message"] = await context.bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
     context.application.create_task(game_countdown(context))
 
 async def game_countdown(context):
     for t in range(30, 0, -1):
         text, markup = build_game_message(t)
-        await context.bot.edit_message_text(
-            chat_id=current_game["chat_id"],
-            message_id=current_game["message"].message_id,
-            text=text,
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
+        try:
+            await context.bot.edit_message_text(chat_id=current_game["chat_id"], message_id=current_game["message"].message_id,
+                                                text=text, reply_markup=markup, parse_mode="HTML")
+        except:
+            return
         await asyncio.sleep(1)
     await end_game(context)
 
@@ -77,36 +77,8 @@ async def end_game(context):
     chat_id = current_game["chat_id"]
     tai_total = sum(current_game["bets"]["tai"].values())
     xiu_total = sum(current_game["bets"]["xiu"].values())
-    tai_count = len(current_game["bets"]["tai"])
-    xiu_count = len(current_game["bets"]["xiu"])
-    text = f"""
-🏁 <b>ĐÓNG CƯỢC!</b>
 
-🅣🅐🅘 👥 {tai_count} | 💰 {format_money(tai_total)}
-🅧🅘🅤 👥 {xiu_count} | 💰 {format_money(xiu_total)}
-
-🎲 Đang quay...
-    """.strip()
-    await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=current_game["message"].message_id,
-        text=text,
-        parse_mode="HTML"
-    )
-    await asyncio.sleep(1)
-
-    # Nháy xúc xắc giả
-    for _ in range(3):
-        fake = [random.randint(1, 6) for _ in range(3)]
-        dice_str = " ".join([f"🎲{d}" for d in fake])
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=current_game["message"].message_id,
-            text=text + f"\n\n{dice_str}",
-            parse_mode="HTML"
-        )
-        await asyncio.sleep(0.7)
-
+    # Quay xúc xắc
     dice = [random.randint(1, 6) for _ in range(3)]
     total = sum(dice)
     result = "tai" if total >= 11 else "xiu"
@@ -139,7 +111,7 @@ async def end_game(context):
 💀 <b>Người thua:</b>
 {chr(10).join(losers_text) if losers_text else '❌ Không ai thua'}
 
-🔄 Ván mới sau 5s...
+🔄 Ván mới sẽ bắt đầu sau ít giây...
     """.strip()
 
     await context.bot.edit_message_text(
@@ -149,19 +121,19 @@ async def end_game(context):
         parse_mode="HTML"
     )
 
-    # Chờ 5s rồi xóa message kết quả
-    await asyncio.sleep(5)
+    # Giữ kết quả 10s
+    await asyncio.sleep(10)
+
+    # Xoá message cũ
     try:
-        await context.bot.delete_message(
-            chat_id=chat_id,
-            message_id=current_game["message"].message_id
-        )
+        await context.bot.delete_message(chat_id=chat_id, message_id=current_game["message"].message_id)
     except Exception as e:
         logger.warning(f"⚠️ Không xóa được message cũ: {e}")
 
-    # Mở phiên mới
+    # Gửi phiên mới
     await start_new_game(context, chat_id)
 
+# ================== CÁC HÀNH ĐỘNG ==================
 async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -170,9 +142,7 @@ async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "check_balance":
-        return await query.message.reply_text(
-            f"👤 {p['name']}\n🔗 @{p['username']}\n💰 {format_money(p['balance'])}\n🏆 {format_money(p['win'])}"
-        )
+        return await query.message.reply_text(f"👤 {p['name']}\n🔗 @{p['username']}\n💰 {format_money(p['balance'])}\n🏆 {format_money(p['win'])}")
     if data == "reset_amount":
         context.user_data["bet_amount"] = 0
         return await query.answer("🔄 Đã reset tiền cược.", show_alert=True)
@@ -189,28 +159,11 @@ async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await query.answer("⚠️ Chọn số tiền trước!", show_alert=True)
         if p["balance"] < amount:
             return await query.answer("⚠️ Hết tiền! Dùng /nhantienfree.", show_alert=True)
-
         side = "tai" if data == "bet_tai" else "xiu"
         current_game["bets"][side][user.id] = current_game["bets"][side].get(user.id, 0) + amount
         p["balance"] -= amount
 
-        # Giữ nguyên thời gian hiện tại
-        last_text = current_game["message"].text_html
-        try:
-            time_left = int(last_text.split("Còn ")[1].split("s")[0])
-        except:
-            time_left = 30
-
-        text, markup = build_game_message(time_left)
-        await context.bot.edit_message_text(
-            chat_id=query.message.chat_id,
-            message_id=query.message.message_id,
-            text=text,
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
-
-# Command
+# ================== LỆNH ==================
 async def nhantienfree(update: Update, context):
     p = get_player(update.effective_user)
     if p["username"] in ADMINS:
@@ -222,9 +175,7 @@ async def nhantienfree(update: Update, context):
 
 async def sodu(update: Update, context):
     p = get_player(update.effective_user)
-    await update.message.reply_text(
-        f"👤 {p['name']}\n🔗 @{p['username']}\n💰 {format_money(p['balance'])}\n🏆 {format_money(p['win'])}"
-    )
+    await update.message.reply_text(f"👤 {p['name']}\n🔗 @{p['username']}\n💰 {format_money(p['balance'])}\n🏆 {format_money(p['win'])}")
 
 async def top(update: Update, context):
     ranking = sorted(players.items(), key=lambda x: x[1]["balance"], reverse=True)
@@ -250,7 +201,7 @@ async def offtaixiu(update: Update, context):
     current_game["active"] = False
     await update.message.reply_text("⛔ Đã tắt Tài Xỉu!")
 
-# MAIN
+# ================== MAIN ==================
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("nhantienfree", nhantienfree))
 app.add_handler(CommandHandler("sodu", sodu))
