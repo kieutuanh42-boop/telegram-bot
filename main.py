@@ -7,12 +7,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Đổi token của bạn
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # 🔑 Đổi token của bạn tại đây
 ADMINS = ["DuRinn_LeTuanDiem", "TraMy_2011"]
 
 players = {}
 current_game = {"status": False, "bets": {"tai": {}, "xiu": {}}, "history": [], "message": None}
-
 BET_AMOUNTS = [1000, 3000, 10000, 30000, 50000, 100000, 1_000_000, 10_000_000, 100_000_000]
 
 def format_money(amount):
@@ -87,19 +86,43 @@ async def start_new_game(context: ContextTypes.DEFAULT_TYPE, chat_id):
     await end_game(context, chat_id)
 
 async def end_game(context, chat_id):
-    # Hiệu ứng nhấp nháy xúc xắc
-    for i in range(3):
+    tai_total = sum(current_game["bets"]["tai"].values())
+    xiu_total = sum(current_game["bets"]["xiu"].values())
+    tai_count = len(current_game["bets"]["tai"])
+    xiu_count = len(current_game["bets"]["xiu"])
+
+    # Đóng cược và thông báo tổng
+    text = f"""
+🏁 <b>ĐÓNG CƯỢC!</b>
+
+🅣🅐🅘 👥 {tai_count} | 💰 {format_money(tai_total)}
+🅧🅘🅤 👥 {xiu_count} | 💰 {format_money(xiu_total)}
+
+🎲 Đang quay...
+    """.strip()
+    await context.bot.edit_message_text(chat_id=chat_id,
+                                        message_id=current_game["message"].message_id,
+                                        text=text,
+                                        parse_mode="HTML")
+    await asyncio.sleep(1)
+
+    # Hiệu ứng quay xúc xắc 3 lần
+    for _ in range(3):
         fake_dice = [random.randint(1, 6) for _ in range(3)]
         dice_str = " ".join([f"🎲{d}" for d in fake_dice])
         text = f"""
-🎲 <b>ĐANG QUAY...</b> {dice_str}
-⏳ Chuẩn bị ra kết quả...
+🏁 <b>ĐÓNG CƯỢC!</b>
+
+🅣🅐🅘 👥 {tai_count} | 💰 {format_money(tai_total)}
+🅧🅘🅤 👥 {xiu_count} | 💰 {format_money(xiu_total)}
+
+🎲 Đang quay: {dice_str}
         """
         await context.bot.edit_message_text(chat_id=chat_id,
                                             message_id=current_game["message"].message_id,
                                             text=text,
                                             parse_mode="HTML")
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(0.7)
 
     # Ra kết quả thật
     dice = [random.randint(1, 6) for _ in range(3)]
@@ -108,8 +131,6 @@ async def end_game(context, chat_id):
     current_game["history"].append(result)
 
     winners = current_game["bets"][result]
-    losers = current_game["bets"]["tai" if result == "xiu" else "xiu"]
-
     for user_id, bet in winners.items():
         players[user_id]["balance"] += bet * 2
         players[user_id]["win"] += bet
@@ -119,8 +140,11 @@ async def end_game(context, chat_id):
 🎲 <b>KẾT QUẢ</b>: {dice_str} = <b>{total}</b>
 <b>KẾT QUẢ:</b> {'🅣🅐🅘' if result == 'tai' else '🅧🅘🅤'}
 
-<b>Trò chơi mới bắt đầu sau 5s...</b>
-    """
+📊 <b>Tổng cược:</b> 
+🅣🅐🅘: {format_money(tai_total)} | 🅧🅘🅤: {format_money(xiu_total)}
+
+🔄 Ván mới bắt đầu sau 5s...
+    """.strip()
     await context.bot.edit_message_text(chat_id=chat_id,
                                         message_id=current_game["message"].message_id,
                                         text=text,
@@ -129,16 +153,14 @@ async def end_game(context, chat_id):
     await start_new_game(context, chat_id)
 
 async def ontaixiu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.username not in ADMINS:
+    if update.effective_user.username not in ADMINS:
         return await update.message.reply_text("⛔ Bạn không có quyền bật game!")
     current_game["status"] = True
     await update.message.reply_text("✅ Đã bật game Tài Xỉu!")
     await start_new_game(context, update.effective_chat.id)
 
 async def offtaixiu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.username not in ADMINS:
+    if update.effective_user.username not in ADMINS:
         return await update.message.reply_text("⛔ Bạn không có quyền tắt game!")
     current_game["status"] = False
     await update.message.reply_text("⛔ Đã tắt game Tài Xỉu!")
