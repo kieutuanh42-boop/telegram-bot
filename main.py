@@ -17,10 +17,10 @@ ADMINS = ["DuRinn_LeTuanDiem", "TraMy_2011"]
 BET_AMOUNTS = [1000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000]
 
 players = {}
-current_game = {"active": False, "bets": {"tai": {}, "xiu": {}}, "history": [], "round": 0}
+current_game = {"active": False, "bets": {"tai": {}, "xiu": {}}, "history": [], "round": 0, "msg": None}
 
 
-def format_money(amount):
+def format_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".")
 
 
@@ -63,33 +63,43 @@ def build_keyboard():
 async def start_new_game(context, chat_id):
     current_game["round"] += 1
     current_game["bets"] = {"tai": {}, "xiu": {}}
-    await context.bot.send_message(
+
+    msg = await context.bot.send_message(
         chat_id,
         f"🎮 <b>Phiên #{current_game['round']} bắt đầu!</b>\n⏳ 30s để cược...",
         reply_markup=build_keyboard(),
         parse_mode="HTML",
     )
-    context.application.create_task(game_countdown(context, chat_id))
+    current_game["msg"] = msg
+    context.application.create_task(game_countdown(context, chat_id, msg.message_id))
 
 
-async def game_countdown(context, chat_id):
-    for t in range(29, 0, -1):
+async def game_countdown(context, chat_id, msg_id):
+    for t in range(30, 0, -1):
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=f"🎮 <b>Phiên #{current_game['round']}</b>\n⏳ Còn {t}s để cược...",
+                reply_markup=build_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Lỗi edit countdown: {e}")
         await asyncio.sleep(1)
-        await context.bot.send_message(chat_id, f"⏳ Còn {t}s để cược...")
     await end_game(context, chat_id)
 
 
 async def end_game(context, chat_id):
     await context.bot.send_message(chat_id, "🏁 Hết giờ! Đang quay xúc xắc...")
 
-    # Nháy xúc xắc giả
+    # Quay giả
     for _ in range(3):
         fake = [random.randint(1, 6) for _ in range(3)]
-        dice_str = " ".join([f"🎲{d}" for d in fake])
-        await context.bot.send_message(chat_id, f"Đang quay... {dice_str}")
-        await asyncio.sleep(0.7)
+        await context.bot.send_message(chat_id, "🎲 " + " ".join(map(str, fake)))
+        await asyncio.sleep(0.6)
 
-    # Kết quả thật
+    # Quay thật
     dice = [random.randint(1, 6) for _ in range(3)]
     total = sum(dice)
     result = "tai" if total >= 11 else "xiu"
@@ -106,10 +116,9 @@ async def end_game(context, chat_id):
             else:
                 losers.append(f"❌ {player['name']} -{format_money(bet)}")
 
-    dice_str = " ".join([f"🎲{d}" for d in dice])
     text = f"""
 🎲 <b>KẾT QUẢ Phiên #{current_game['round']}</b>
-{dice_str} = <b>{total}</b> → {'🅣🅐🅘' if result == 'tai' else '🅧🅘🅤'}
+🎲 {' '.join(map(str, dice))} = <b>{total}</b> → {'🅣🅐🅘' if result=='tai' else '🅧🅘🅤'}
 
 🏆 <b>Người thắng:</b>
 {chr(10).join(winners) if winners else '❌ Không có'}
@@ -119,7 +128,6 @@ async def end_game(context, chat_id):
 
 🔄 Ván mới sau 5s...
     """.strip()
-
     await context.bot.send_message(chat_id, text, parse_mode="HTML")
     await asyncio.sleep(5)
     await start_new_game(context, chat_id)
@@ -143,8 +151,7 @@ async def bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("bet_amount_"):
         context.user_data["bet_amount"] = int(data.split("_")[-1])
         return await query.answer(
-            f"💰 Chọn {format_money(context.user_data['bet_amount'])}",
-            show_alert=True,
+            f"💰 Chọn {format_money(context.user_data['bet_amount'])}", show_alert=True
         )
     if data == "bet_all":
         context.user_data["bet_amount"] = p["balance"]
