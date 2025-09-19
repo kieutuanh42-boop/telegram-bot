@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 
 BALANCES = {}  # user_id -> số dư
-CURRENT_GAME = {}  # chat_id -> {"bets": {"tai": [], "xiu": []}, "amount": 0, "msg_id": None, "open": False}
+CURRENT_GAME = {}  # chat_id -> {bets, amount, msg_id, open}
 
 
 def fmt_money(n):
@@ -45,9 +45,16 @@ async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start_round(context: ContextTypes.DEFAULT_TYPE, chat_id):
-    # tạo ván mới
     CURRENT_GAME[chat_id] = {"bets": {"tai": [], "xiu": []}, "amount": 0, "msg_id": None, "open": True}
-    keyboard = [
+    msg = await context.bot.send_message(chat_id, await build_game_text(chat_id), reply_markup=build_keyboard())
+    CURRENT_GAME[chat_id]["msg_id"] = msg.message_id
+
+    await asyncio.sleep(30)
+    await close_round(context, chat_id)
+
+
+def build_keyboard():
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎲 TÀI", callback_data="bet_tai"),
          InlineKeyboardButton("🎲 XỈU", callback_data="bet_xiu")],
         [InlineKeyboardButton("1k", callback_data="amt_1000"),
@@ -56,40 +63,32 @@ async def start_round(context: ContextTypes.DEFAULT_TYPE, chat_id):
         [InlineKeyboardButton("1m", callback_data="amt_1000000"),
          InlineKeyboardButton("10m", callback_data="amt_10000000"),
          InlineKeyboardButton("All-in", callback_data="amt_all")]
-    ]
-    msg = await context.bot.send_message(
-        chat_id,
-        "🎮 Ván Tài Xỉu mới bắt đầu!\n⏳ Bạn có 30s để cược.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    CURRENT_GAME[chat_id]["msg_id"] = msg.message_id
-
-    # đợi 30 giây rồi chốt kèo
-    await asyncio.sleep(30)
-    await close_round(context, chat_id)
+    ])
 
 
-async def update_board_message(context, chat_id, game):
-    tai_list = "\n".join([f"🎲 {name} ({fmt_money(a)})" for name, _, a in game["bets"]["tai"]]) or "Chưa ai"
-    xiu_list = "\n".join([f"🎲 {name} ({fmt_money(a)})" for name, _, a in game["bets"]["xiu"]]) or "Chưa ai"
-    text = (f"🎮 ĐANG CƯỢC...\n"
-            f"💰 Mức: {fmt_money(game['amount']) if game['amount'] else 'Chưa chọn'}\n\n"
-            f"🔴 Tài:\n{tai_list}\n\n🔵 Xỉu:\n{xiu_list}")
+async def build_game_text(chat_id):
+    game = CURRENT_GAME.get(chat_id)
+    if not game:
+        return "❌ Chưa có ván nào."
+    tai_total = sum(a for _, _, a in game["bets"]["tai"])
+    xiu_total = sum(a for _, _, a in game["bets"]["xiu"])
+    tai_count = len(game["bets"]["tai"])
+    xiu_count = len(game["bets"]["xiu"])
+
+    return (f"🎲 **TÀI XỈU** 🎲\n"
+            f"⏳ Còn 30s để cược!\n\n"
+            f"🔴 **TÀI**: {fmt_money(tai_total)} ({tai_count} người)\n"
+            f"🔵 **XỈU**: {fmt_money(xiu_total)} ({xiu_count} người)\n\n"
+            f"💰 Mức đặt: {fmt_money(game['amount']) if game['amount'] else 'Chưa chọn'}")
+
+
+async def update_board(context, chat_id):
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id,
-            message_id=game["msg_id"],
-            text=text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎲 TÀI", callback_data="bet_tai"),
-                 InlineKeyboardButton("🎲 XỈU", callback_data="bet_xiu")],
-                [InlineKeyboardButton("1k", callback_data="amt_1000"),
-                 InlineKeyboardButton("10k", callback_data="amt_10000"),
-                 InlineKeyboardButton("100k", callback_data="amt_100000")],
-                [InlineKeyboardButton("1m", callback_data="amt_1000000"),
-                 InlineKeyboardButton("10m", callback_data="amt_10000000"),
-                 InlineKeyboardButton("All-in", callback_data="amt_all")]
-            ])
+            message_id=CURRENT_GAME[chat_id]["msg_id"],
+            text=await build_game_text(chat_id),
+            reply_markup=build_keyboard()
         )
     except:
         pass
@@ -101,12 +100,10 @@ async def close_round(context, chat_id):
         return
     game["open"] = False
 
-    # tung 3 xúc xắc
     dice = [random.randint(1, 6) for _ in range(3)]
     total = sum(dice)
     result = "tai" if total >= 11 else "xiu"
 
-    # hiển thị xúc xắc bằng emoji 🎲
     dice_emoji = "".join(["🎲" for _ in dice])
     text = f"🎯 Kết quả: {dice_emoji} = {total} → {'TÀI' if result == 'tai' else 'XỈU'}\n"
 
@@ -121,8 +118,6 @@ async def close_round(context, chat_id):
         text += "😢 Không ai thắng ván này."
 
     await context.bot.send_message(chat_id, text)
-
-    # mở ván mới tự động
     await asyncio.sleep(3)
     await start_round(context, chat_id)
 
@@ -147,7 +142,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             game["amount"] = BALANCES.get(user.id, 0)
         else:
             game["amount"] = int(amount)
-        await query.answer(f"💵 Chọn {fmt_money(game['amount'])}")
+        await update_board(context, chat_id)
         return
 
     if query.data.startswith("bet_"):
@@ -163,7 +158,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         side = "tai" if query.data == "bet_tai" else "xiu"
         BALANCES[user.id] -= game["amount"]
         game["bets"][side].append((user.first_name, user.id, game["amount"]))
-        await update_board_message(context, chat_id, game)
+        await update_board(context, chat_id)
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
