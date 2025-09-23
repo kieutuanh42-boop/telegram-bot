@@ -1,7 +1,11 @@
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler
+from dotenv import load_dotenv
 
-TOKEN = "YOUR_BOT_TOKEN"
+# Load biến môi trường từ file .env (nếu chạy local)
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
 
 # /start
 def start(update: Update, context: CallbackContext):
@@ -54,6 +58,10 @@ def button(update: Update, context: CallbackContext):
         query.edit_message_text(f"{text_map[query.data]} {link}")
 
 def main():
+    if not TOKEN:
+        print("⚠️ Chưa tìm thấy BOT_TOKEN trong biến môi trường!")
+        return
+
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
